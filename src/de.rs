@@ -23,7 +23,7 @@ pub use crate::read::{Read, SliceRead, StrRead};
 
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
-pub use crate::read::IoRead;
+pub use crate::read::{ChunksRead, IoRead};
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -42,6 +42,42 @@ impl<'de, R> Deserializer<R>
 where
     R: read::Read<'de>,
 {
+    fn deserialize_text<V>(&mut self, visitor: V, owned: bool) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        let peek = match tri!(self.parse_whitespace()) {
+            Some(b) => b,
+            None => {
+                return Err(self.peek_error(ErrorCode::EofWhileParsingValue));
+            }
+        };
+
+        let value = match peek {
+            b'"' => {
+                self.eat_char();
+                self.scratch.clear();
+                match tri!(self.read.parse_str(&mut self.scratch)) {
+                    Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
+                    Reference::Copied(_) if owned => {
+                        // parse_str has already validated UTF-8 and populated scratch.
+                        let text = unsafe {
+                            String::from_utf8_unchecked(core::mem::take(&mut self.scratch))
+                        };
+                        visitor.visit_string(text)
+                    }
+                    Reference::Copied(s) => visitor.visit_str(s),
+                }
+            }
+            _ => Err(self.peek_invalid_type(&visitor)),
+        };
+
+        match value {
+            Ok(value) => Ok(value),
+            Err(err) => Err(self.fix_position(err)),
+        }
+    }
+
     /// Create a JSON deserializer from one of the possible serde_json input
     /// sources.
     ///
@@ -81,6 +117,14 @@ where
     /// -- everything it does involves copying bytes out of the data source.
     pub fn from_reader(reader: R) -> Self {
         Deserializer::new(read::IoRead::new(reader))
+    }
+}
+
+#[cfg(feature = "std")]
+impl<'a, I: Iterator<Item = &'a [u8]> + Clone> Deserializer<read::ChunksRead<'a, I>> {
+    /// Deserializes immutable byte chunks without combining the input buffers.
+    pub fn from_chunks(chunks: I) -> Self {
+        Self::new(read::ChunksRead::new(chunks))
     }
 }
 
@@ -1525,36 +1569,14 @@ impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
     where
         V: de::Visitor<'de>,
     {
-        let peek = match tri!(self.parse_whitespace()) {
-            Some(b) => b,
-            None => {
-                return Err(self.peek_error(ErrorCode::EofWhileParsingValue));
-            }
-        };
-
-        let value = match peek {
-            b'"' => {
-                self.eat_char();
-                self.scratch.clear();
-                match tri!(self.read.parse_str(&mut self.scratch)) {
-                    Reference::Borrowed(s) => visitor.visit_borrowed_str(s),
-                    Reference::Copied(s) => visitor.visit_str(s),
-                }
-            }
-            _ => Err(self.peek_invalid_type(&visitor)),
-        };
-
-        match value {
-            Ok(value) => Ok(value),
-            Err(err) => Err(self.fix_position(err)),
-        }
+        self.deserialize_text(visitor, false)
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        self.deserialize_str(visitor)
+        self.deserialize_text(visitor, true)
     }
 
     /// Parses a JSON string as bytes. Note that this function does not check

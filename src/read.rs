@@ -1087,3 +1087,8 @@ fn decode_four_hex_digits(a: u8, b: u8, c: u8, d: u8) -> Option<u16> {
         None
     }
 }
+
+#[cfg(feature = "std")]
+mod chunks;
+#[cfg(feature = "std")]
+pub use chunks::ChunksRead;
