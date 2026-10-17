@@ -188,13 +188,10 @@ impl<'a, I: Iterator<Item = &'a [u8]> + Clone> Read<'a> for ChunksRead<'a, I> {
             }
             let part = &chunk[start..start + cmp::min(length, chunk.len() - start)];
             if bytes.is_empty() && part.len() == length {
-                let raw = str::from_utf8(part).map_err(|_| {
-                    Error::syntax(
-                        ErrorCode::InvalidUnicodeCodePoint,
-                        self.position().line,
-                        self.position().column,
-                    )
-                })?;
+                let raw = match str::from_utf8(part) {
+                    Ok(raw) => raw,
+                    Err(_) => return error(self, ErrorCode::InvalidUnicodeCodePoint),
+                };
                 return visitor.visit_map(BorrowedRawDeserializer {
                     raw_value: Some(raw),
                 });
@@ -209,13 +206,10 @@ impl<'a, I: Iterator<Item = &'a [u8]> + Clone> Read<'a> for ChunksRead<'a, I> {
                 break;
             }
         }
-        let raw = String::from_utf8(bytes).map_err(|_| {
-            Error::syntax(
-                ErrorCode::InvalidUnicodeCodePoint,
-                self.position().line,
-                self.position().column,
-            )
-        })?;
+        let raw = match String::from_utf8(bytes) {
+            Ok(raw) => raw,
+            Err(_) => return error(self, ErrorCode::InvalidUnicodeCodePoint),
+        };
         visitor.visit_map(OwnedRawDeserializer {
             raw_value: Some(raw),
         })
